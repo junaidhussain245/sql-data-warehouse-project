@@ -39,41 +39,81 @@ BEGIN
         TRUNCATE TABLE silver.crm_cust_info;
         PRINT '>> Inserting Data into: silver.crm_cust_info';
 
-        INSERT INTO silver.crm_cust_info (
-            cst_id,
-            cst_key,
-            cst_firstname,
-            cst_lastname,
-            cst_marital_status,
-            cst_gndr,
-            cst_create_date
-        )
-        SELECT
-            cst_id,
-            cst_key,
-            cst_firstname,
-            cst_lastname,
+       PRINT '>> Truncating Table: silver.crm_cust_info';
+TRUNCATE TABLE silver.crm_cust_info;
 
-            CASE UPPER(LTRIM(RTRIM(cst_marital_status)))
-                WHEN 'S' THEN 'Single'
-                WHEN 'M' THEN 'Married'
-                ELSE 'n/a'
-            END AS cst_marital_status,
+PRINT '>> Inserting Data into: silver.crm_cust_info';
 
-            CASE UPPER(LTRIM(RTRIM(cst_gndr)))
-                WHEN 'M' THEN 'Male'
-                WHEN 'F' THEN 'Female'
-                ELSE 'n/a'
-            END AS cst_gndr,
-
-            CASE
-                WHEN cst_create_date IS NULL
-                  OR cst_create_date = '0'
-                  OR LTRIM(RTRIM(cst_create_date)) = ''
-                THEN NULL
-                ELSE TRY_CONVERT(DATE, cst_create_date, 23)
-            END AS cst_create_date
-        FROM bronze.crm_cust_info;
+		WITH cleaned AS (
+		    SELECT
+		        cst_id,
+		        TRIM(cst_key) AS cst_key,
+		        TRIM(cst_firstname) AS cst_firstname,
+		        TRIM(cst_lastname)  AS cst_lastname,
+		        TRIM(cst_marital_status) AS cst_marital_status,  
+		        TRIM(cst_gndr) AS cst_gndr,
+		
+		        CASE
+		            WHEN cst_create_date IS NULL
+		              OR cst_create_date = '0'
+		              OR TRIM(cst_create_date) = ''
+		            THEN NULL
+		            ELSE TRY_CONVERT(DATE, cst_create_date, 23)
+		        END AS cst_create_date
+		    FROM bronze.crm_cust_info
+		    WHERE cst_id IS NOT NULL
+		),
+		ranked AS (
+		    SELECT *,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY cst_key
+		               ORDER BY
+		                   cst_create_date DESC,
+		                   cst_id DESC
+		           ) AS rn_key
+		    FROM cleaned
+		),
+		dedup_id AS (
+		    SELECT *,
+		           ROW_NUMBER() OVER (
+		               PARTITION BY cst_id
+		               ORDER BY
+		                   cst_create_date DESC,
+		                   cst_key
+		           ) AS rn_id
+		    FROM ranked
+		    WHERE rn_key = 1
+		)
+		INSERT INTO silver.crm_cust_info (
+		    cst_id,
+		    cst_key,
+		    cst_firstname,
+		    cst_lastname,
+		    cst_marital_status,
+		    cst_gndr,
+		    cst_create_date
+		)
+		SELECT
+		    cst_id,
+		    cst_key,
+		    cst_firstname,
+		    cst_lastname,
+		
+		    CASE UPPER(ISNULL(cst_marital_status, ''))
+		        WHEN 'S' THEN 'Single'
+		        WHEN 'M' THEN 'Married'
+		        ELSE 'n/a'
+		    END AS cst_marital_status,
+		
+		    CASE UPPER(ISNULL(cst_gndr, ''))        
+		        WHEN 'M' THEN 'Male'
+		        WHEN 'F' THEN 'Female'
+		        ELSE 'n/a'
+		    END AS cst_gndr,
+		
+		    cst_create_date
+		FROM dedup_id
+		WHERE rn_id = 1;
         SET @end_time = GETDATE();
         PRINT '>> Load Duration: ' + CAST(DATEDIFF(SECOND, @start_time, @end_time) AS NVARCHAR) + ' seconds';
         PRINT '>> -------------';
